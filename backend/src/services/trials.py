@@ -20,6 +20,8 @@ def create(db,data,user):
     if transfer.quantity>sample.quantity: raise HTTPException(422,'当前样本量不足')
     obj=Trial(**data.model_dump(),status=RUN_STATES[0])
     result=save(db,obj,user,'并发演练入队 '+data.name)
+    # The drill copies the sample ledger into an isolated balance row; it never
+    # touches business stock, so it is unaffected by online reservations.
     db.add(TrialBalance(trial_id=obj.id,remaining=sample.quantity,received=0));db.commit()
     try: queue.rpush('locklab:queue',str(obj.id))
     except Exception:

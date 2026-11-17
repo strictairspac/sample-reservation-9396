@@ -3,3 +3,10 @@
 -- Critical locking query (worker only):
 -- SELECT remaining FROM trial_balances WHERE trial_id = :id FOR UPDATE;
 -- SET LOCAL lock_timeout = '250ms';
+--
+-- Online reservations (business writers follow settings -> sample -> reservation):
+--   SELECT mode FROM reservation_settings WHERE id = 1 FOR SHARE;   -- application / stock write
+--   SELECT mode FROM reservation_settings WHERE id = 1 FOR UPDATE;  -- enablement cut
+--   SELECT * FROM samples ORDER BY id FOR UPDATE;                   -- enablement batch
+--   SELECT pg_try_advisory_lock(0x52534552);                        -- single-flight enable batch
+--   SELECT * FROM reservations WHERE id = :id FOR UPDATE;           -- confirm / cancel one terminal state

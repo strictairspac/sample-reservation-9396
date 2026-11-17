@@ -8,6 +8,7 @@
 
 - 样本台账：批次、可用份数、保管位置，可录入。
 - 流转申请：关联样本、指定数量和接收实验室。
+- 在线预留：可在线启用，已有申请按原编号全量纳入；任一样本不足则整批不生效；启用期间登记与库存调整照常完成。
 - 并发执行：Redis 队列、独立 Python worker、可设锁等待上限。
 - 冲突证据：Backend PID、SQLSTATE、回执回滚、数量守恒与 JSON 导出。
 - 管理员审计：登录、写入和执行动作。
@@ -27,6 +28,20 @@ docker compose exec -T backend python -m scripts.seed_demo
 |admin|admin@qingyu.test|Demo2026!|全业务写入、执行、审计|
 |operator|operator@qingyu.test|Demo2026!|创建样本、申请、执行、导出|
 |viewer|viewer@qingyu.test|Demo2026!|只读、导出；写 API 返回403|
+
+## 在线预留流程
+
+入口为「预留流程」页。启用批次带一个编号与内容标识：
+
+1. 点「启用预留流程」后批次依次显示 `待启用 → 处理中 → 已生效`，失败显示具体原因（如某样本已有申请 130 份、库存 120 份、缺 10 份）。
+2. 任一样本申请合计超过库存则整批不生效，不会产生部分预留；修正库存或申请后点「以原编号重试启用」。
+3. 同编号同内容重试不会重复占量；同编号改内容返回 409；已生效后再提交其他编号批次同样返回 409。
+4. 启用中断（进程被杀）后 `processing` 批次可重试：单飞 advisory lock 随会话释放，重试会重新核对全量数据并只补缺失的预留。
+5. 启用期间申请登记与库存调整照常提交：事务先取 `reservation_settings` 的共享锁。启用批次持排他锁，切换前提交的申请被批次纳入，切换后提交的申请在线生成自己的预留，两者不会重复也不会遗漏。
+6. 生效后每笔预留可「确认扣库存」（库存减预留量）或「撤销预留」（释放可用量）。两笔并发仅一个终态，另一笔收到 409。库存下调不得低于已预留合计，因此可用量恒为非负。
+7. 原有并发演练继续可用：演练复制样本库存到 `trial_balances`，不占用业务预留。
+
+口径：`可用量 = 库存 - 预留中合计`；`预留中合计 <= 库存`；每个申请编号最多一条预留。
 
 ## 一天剧本
 
@@ -50,8 +65,8 @@ docker compose exec -T backend python -m scripts.seed_demo
 |db|PostgreSQL16|业务数据、隔离镜像账本|
 |redis|Redis7|持久队列|
 
-目录：`frontend/src/{api,stores,types,components/common,hooks,pages,router,utils,constants}`；`backend/src/{routes,controllers,services,models,schemas,middlewares,utils,constants,config}`；`backend/scripts/seed_demo.py`；`backend/migrations/001_initial.sql`。
-核心实体 Sample、Transfer、Trial 各有模型、schema、服务、路由、API、store与页面；共享 table/badge/frame 组件。共享枚举 roles/run states 位于后端 `src/constants/enums.py`、模型/权限引用和前端 `src/constants/enums.js`、frame/badge；状态枚举 queued/running/completed/failed。两个后端中间件：request_id/errors。
+目录：`frontend/src/{api,stores,types,components/common,hooks,pages,router,utils,constants}`；`backend/src/{routes,controllers,services,models,schemas,middlewares,utils,constants,config}`；`backend/scripts/seed_demo.py`；`backend/migrations/001_initial.sql`；`backend/tests/test_reservations.py`。
+核心实体 Sample、Transfer、Trial、Reservation 各有模型、schema、服务、路由、API、store与页面；共享 table/badge/frame 组件。共享枚举 roles/run states 位于后端 `src/constants/enums.py`、模型/权限引用和前端 `src/constants/enums.js`、frame/badge；状态枚举 queued/running/completed/failed。两个后端中间件：request_id/errors。
 
 环境变量见 `.env.example`：COMPOSE_PROJECT_NAME、三端口、DB_PASSWORD、JWT_SECRET、SEED_DEMO。默认密码仅用于本地演示；JWT8小时有效。seed按自然键仅插入缺失行，不覆盖修改。所有5服务有健康检查，backend/worker依赖健康数据库/Redis，frontend依赖backend；db/redis/artifacts使用命名卷。停止及清空本项目数据：`docker compose down -v --remove-orphans`。
 
@@ -59,3 +74,12 @@ docker compose exec -T backend python -m scripts.seed_demo
 
 ## License
 MIT，见 LICENSE。测试脚本、截图与实际结果位于源码外 `../../test-artifacts/gb-4103/`。
+
+### 预留流程测试
+
+`backend/tests` 针对真实 PostgreSQL 验证启用竞争、确认撤销竞争、启用期间的申请登记与库存下调，以及中断恢复。测试会清空业务表，请指向一次性数据库：
+
+```sh
+cd backend
+TEST_DATABASE_URL=postgresql+psycopg://locklab:locklab_demo_pw@localhost:17742/locklab pytest tests -q
+```

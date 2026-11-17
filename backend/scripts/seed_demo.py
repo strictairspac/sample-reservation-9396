@@ -4,7 +4,9 @@ from src.models.entities import User,Sample,Transfer,Trial
 from src.utils.security import password_hash
 
 def seed():
+    from src.services.reservations import bootstrap
     Base.metadata.create_all(engine)
+    bootstrap()
     with Session() as db:
         for role in ('admin','operator','viewer'):
             email=role+'@qingyu.test'
